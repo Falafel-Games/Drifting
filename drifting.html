@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+  <meta charset="UTF-8" />
+  <title>Falafel Games | Drifting</title>
+  <link rel="icon" href="Drifting.png" type="png">
+  <style>
+    body { margin: 0; overflow: hidden; background: #87ceeb; font-family: sans-serif; }
+    canvas { display: block; }
+
+    #startScreen {
+      position: absolute; top: 0; left: 0;
+      width: 100%; height: 100%;
+      background: rgba(0,0,0,0.85);
+      color: white;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      z-index: 10;
+    }
+
+    #startScreen h1 { font-size: 3em; margin-bottom: 20px; }
+
+    .colorChoice, .worldOption {
+      width: 50px; height: 50px;
+      border-radius: 10px;
+      margin: 5px;
+      border: 3px solid white;
+      cursor: pointer;
+      display: inline-block;
+    }
+
+    .colorChoice.selected, .worldOption.selected {
+      border-color: yellow;
+    }
+
+    #colorChoices, #worldChoices {
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+
+    .worldOption {
+      width: auto;
+      padding: 10px 20px;
+      background: #222;
+      color: white;
+      font-size: 1em;
+      text-align: center;
+    }
+
+    button {
+      padding: 10px 25px;
+      font-size: 1.2em;
+      cursor: pointer;
+      border-radius: 8px;
+      background: #ff8800;
+      color: white;
+      border: none;
+    }
+
+    #score {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      color: white;
+      font-size: 20px;
+      z-index: 5;
+    }
+
+    /* حذفت #restartButton من هنا لأنه تم حذف الزر */
+  </style>
+</head>
+<body>
+
+<div id="startScreen">
+  <h1>Falafel Drifter</h1>
+  <p>اختر لون السيارة:</p>
+  <div id="colorChoices">
+    <div class="colorChoice selected" style="background: red;" data-color="#ff0000"></div>
+    <div class="colorChoice" style="background: blue;" data-color="#0000ff"></div>
+    <div class="colorChoice" style="background: green;" data-color="#00ff00"></div>
+    <div class="colorChoice" style="background: black;" data-color="#000000"></div>
+    <div class="colorChoice" style="background: orange;" data-color="#ffa500"></div>
+  </div>
+
+  <p>اختر العالم:</p>
+  <div id="worldChoices">
+    <div class="worldOption selected" data-world="city">🌆 المدينة</div>
+    <div class="worldOption" data-world="desert">🏜️ الصحراء</div>
+  </div>
+
+  <button onclick="startGame()">ابدأ</button>
+</div>
+
+<div id="score">النقاط: 0</div>
+
+<!-- أصوات -->
+<audio id="startSound" src="start.mp3"></audio>
+<audio id="driftSound" src="drift.mp3"></audio>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+  let scene, camera, renderer, car, keys = {}, velocity = 0;
+  let carColor = "#ff0000", worldType = "city";
+  const acceleration = 0.02, deceleration = 0.01, maxSpeed = 3, turnSpeed = 0.05;
+  const smokeParticles = [];
+  let isGameStarted = false;
+  let score = 0;
+  let driftCooldown = 0;
+
+  document.querySelectorAll('.colorChoice').forEach(choice => {
+    choice.addEventListener('click', () => {
+      document.querySelectorAll('.colorChoice').forEach(c => c.classList.remove('selected'));
+      choice.classList.add('selected');
+      carColor = choice.dataset.color;
+    });
+  });
+
+  document.querySelectorAll('.worldOption').forEach(option => {
+    option.addEventListener('click', () => {
+      document.querySelectorAll('.worldOption').forEach(o => o.classList.remove('selected'));
+      option.classList.add('selected');
+      worldType = option.dataset.world;
+    });
+  });
+
+  function createSmokeTexture() {
+    const size = 128;
+    const canvas = document.createElement('canvas');
+    canvas.width = size; canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    const gradient = ctx.createRadialGradient(size/2, size/2, size/8, size/2, size/2, size/2);
+    gradient.addColorStop(0, 'rgba(200,200,200,0.6)');
+    gradient.addColorStop(0.3, 'rgba(120,120,120,0.3)');
+    gradient.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, size, size);
+    return new THREE.CanvasTexture(canvas);
+  }
+
+  function createSmokeParticle(position){
+    const geometry = new THREE.PlaneGeometry(1, 1);
+    const material = new THREE.MeshBasicMaterial({
+      color: 0x555555, transparent: true, opacity: 0.5,
+      depthWrite: false, map: createSmokeTexture(), side: THREE.DoubleSide
+    });
+    const particle = new THREE.Mesh(geometry, material);
+    particle.position.copy(position);
+    particle.rotation.x = -Math.PI / 2;
+    particle.life = 1;
+    particle.size = 1 + Math.random();
+    particle.speedY = 0.02 + Math.random() * 0.01;
+    smokeParticles.push(particle);
+    scene.add(particle);
+  }
+
+  function animateSmoke(){
+    for(let i = smokeParticles.length - 1; i >= 0; i--) {
+      const p = smokeParticles[i];
+      p.position.y += p.speedY;
+      p.material.opacity = p.life * 0.5;
+      p.scale.set(p.size * (1 - p.life), p.size * (1 - p.life), 1);
+      p.life -= 0.01;
+      if (p.life <= 0) {
+        scene.remove(p);
+        smokeParticles.splice(i, 1);
+      }
+    }
+  }
+
+  function init() {
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x87ceeb);
+
+    camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 5, 15);
+
+    renderer = new THREE.WebGLRenderer({antialias:true});
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(300, 300),
+      new THREE.MeshStandardMaterial({color: 0x444444})
+    );
+    ground.rotation.x = -Math.PI / 2;
+    scene.add(ground);
+
+    const road = new THREE.Mesh(
+      new THREE.PlaneGeometry(20, 300),
+      new THREE.MeshStandardMaterial({color: 0x111111})
+    );
+    road.position.y = 0.01;
+    road.rotation.x = -Math.PI / 2;
+    scene.add(road);
+
+    const lineMaterial = new THREE.MeshStandardMaterial({color: 0xffffff});
+    for(let i = -140; i <= 140; i += 10){
+      const line = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.01, 4), lineMaterial);
+      line.position.set(0, 0.02, i);
+      scene.add(line);
+    }
+
+    const sun = new THREE.DirectionalLight(0xfff8e7, 1.2);
+    sun.position.set(30, 50, 30);
+    scene.add(sun);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+
+    car = new THREE.Group();
+    const carBody = new THREE.Mesh(new THREE.BoxGeometry(2, 0.5, 4), new THREE.MeshStandardMaterial({color: carColor}));
+    carBody.position.y = 0.25;
+    car.add(carBody);
+
+    const carTop = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.4, 2), new THREE.MeshStandardMaterial({color: 0x770000}));
+    carTop.position.y = 0.7;
+    car.add(carTop);
+
+    const wheelGeo = new THREE.CylinderGeometry(0.4, 0.4, 0.3, 32);
+    const wheelMat = new THREE.MeshStandardMaterial({color: 0x222222});
+    const wheelPos = [[-0.9, 0.15, -1.5],[0.9, 0.15, -1.5],[-0.9, 0.15, 1.5],[0.9, 0.15, 1.5]];
+    for (let pos of wheelPos){
+      const wheel = new THREE.Mesh(wheelGeo, wheelMat);
+      wheel.rotation.z = Math.PI / 2;
+      wheel.position.set(...pos);
+      car.add(wheel);
+    }
+    car.position.y = 0.5;
+    scene.add(car);
+
+    if (worldType === "city") {
+      for(let i = -120; i <= 120; i += 30){
+        const h1 = 10 + Math.random() * 15;
+        const b1 = new THREE.Mesh(new THREE.BoxGeometry(8, h1, 8), new THREE.MeshStandardMaterial({color: new THREE.Color(`hsl(${Math.random() * 360}, 30%, 60%)`)}));
+        b1.position.set(-15, h1 / 2, i + (Math.random() * 10 - 5));
+        scene.add(b1);
+
+        const h2 = 10 + Math.random() * 15;
+        const b2 = new THREE.Mesh(new THREE.BoxGeometry(8, h2, 8), new THREE.MeshStandardMaterial({color: new THREE.Color(`hsl(${Math.random() * 360}, 30%, 60%)`)}));
+        b2.position.set(15, h2 / 2, i + (Math.random() * 10 - 5));
+        scene.add(b2);
+      }
+    } else if (worldType === "desert") {
+      const sand = new THREE.Mesh(new THREE.PlaneGeometry(300, 300), new THREE.MeshStandardMaterial({color: 0xCCAA66}));
+      sand.rotation.x = -Math.PI / 2;
+      scene.add(sand);
+
+      for (let i = 0; i < 30; i++) {
+        const cactus = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.3, 0.3, 2 + Math.random(), 6),
+          new THREE.MeshStandardMaterial({color: 0x228833})
+        );
+        cactus.position.set(Math.random()*200 - 100, 1, Math.random()*200 - 100);
+        scene.add(cactus);
+      }
+    }
+
+    document.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
+    document.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+  }
+
+  function animate() {
+    if(!isGameStarted) return;
+    requestAnimationFrame(animate);
+
+    if(keys['arrowup']) { velocity += acceleration; if(velocity > maxSpeed) velocity = maxSpeed; }
+    else if(keys['arrowdown']) { velocity -= acceleration; if(velocity < -maxSpeed/2) velocity = -maxSpeed/2; }
+    else {
+      if(velocity > 0) velocity -= deceleration;
+      else if(velocity < 0) velocity += deceleration;
+      if(Math.abs(velocity) < deceleration) velocity = 0;
+    }
+
+    let turn = 0;
+    if(keys['arrowleft']) turn = 1;
+    else if(keys['arrowright']) turn = -1;
+
+    const drifting = keys['shift'] && velocity > 0.1;
+    if(drifting) {
+      car.rotation.y += turn * turnSpeed * 1.5;
+      velocity *= 0.995;
+      const rearLeft = new THREE.Vector3(-0.9, 0.2, 1.5).applyMatrix4(car.matrixWorld);
+      const rearRight = new THREE.Vector3(0.9, 0.2, 1.5).applyMatrix4(car.matrixWorld);
+      createSmokeParticle(rearLeft);
+      createSmokeParticle(rearRight);
+
+      score += 1;
+      document.getElementById("score").innerText = `النقاط: ${score}`;
+
+      if (driftCooldown <= 0) {
+        document.getElementById('driftSound').play();
+        driftCooldown = 20;
+      } else {
+        driftCooldown--;
+      }
+    } else if(velocity !== 0){
+      car.rotation.y += turn * turnSpeed * (velocity / maxSpeed);
+    }
+
+    car.position.x -= Math.sin(car.rotation.y) * velocity;
+    car.position.z -= Math.cos(car.rotation.y) * velocity;
+
+    const camOffset = new THREE.Vector3(0, 5, 15);
+    const camPos = camOffset.applyAxisAngle(new THREE.Vector3(0,1,0), car.rotation.y).add(car.position);
+    camera.position.lerp(camPos, 0.1);
+    camera.lookAt(car.position);
+
+    animateSmoke();
+    renderer.render(scene, camera);
+  }
+
+  function startGame() {
+    if(isGameStarted) return;
+
+    isGameStarted = true;
+    document.getElementById("startScreen").style.display = "none";
+    init();
+    document.getElementById('startSound').play();
+    animate();
+  }
+
+</script>
+</body>
+</html>
